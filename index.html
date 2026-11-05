@@ -14,13 +14,25 @@
   }
   h1 { font-size: 20px; font-weight: 700; margin-bottom: 2px; }
   .sub { color: #8a94a3; font-size: 12px; margin-bottom: 18px; }
-  .price { font-size: 40px; font-weight: 800; letter-spacing: -0.5px; }
+  .price-row { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .price { font-size: 40px; font-weight: 800; letter-spacing: -0.5px; transition: color .3s; }
   .price small { font-size: 18px; color: #8a94a3; font-weight: 600; }
-  .chg { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0 20px; }
+  .tick { font-size: 22px; font-weight: 800; }
+  /* A股惯例：红涨绿跌 */
+  .up { color: #ff4d4f; } .down { color: #2ecc71; }
+  .live-badge {
+    font-size: 15px; font-weight: 700; padding: 4px 10px; border-radius: 8px; background: #171c26;
+  }
+  .chg { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0 16px; }
   .chg span {
     font-size: 12px; padding: 4px 9px; border-radius: 20px; background: #171c26;
   }
-  .up { color: #2ecc71; } .down { color: #ff5c5c; }
+  .chartbox { background: #141922; border: 1px solid #232b38; border-radius: 14px; padding: 12px 14px 8px; margin-bottom: 14px; }
+  .chartbox .chead { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+  .chartbox .ctitle { font-size: 13px; color: #c6cedb; }
+  .chartbox .cpct { font-size: 18px; font-weight: 800; }
+  .chartbox .cmeta { font-size: 11px; color: #5c6675; margin-top: 4px; }
+  #chart { width: 100%; height: 110px; display: block; }
   .card {
     background: #141922; border: 1px solid #232b38; border-radius: 14px;
     padding: 14px 16px; margin-bottom: 10px;
@@ -46,10 +58,23 @@
 </head>
 <body>
   <h1>AGC · Agentic Coin</h1>
-  <div class="sub">BSC / PancakeSwap 实时行情 · 每 30 秒自动刷新</div>
+  <div class="sub">BSC / PancakeSwap 实时行情 · 每 30 秒自动刷新 · 红涨绿跌</div>
 
-  <div class="price" id="price">加载中…</div>
+  <div class="price-row">
+    <div class="price" id="price">加载中…</div>
+    <div class="tick" id="tick"></div>
+    <div class="live-badge" id="liveBadge"></div>
+  </div>
   <div class="chg" id="chg"></div>
+
+  <div class="chartbox">
+    <div class="chead">
+      <div class="ctitle">实时涨幅线（近 2 小时 · 每 30 秒一个点）</div>
+      <div class="cpct" id="chartPct"></div>
+    </div>
+    <canvas id="chart"></canvas>
+    <div class="cmeta" id="chartMeta"></div>
+  </div>
 
   <div id="cards"></div>
 
@@ -74,7 +99,10 @@ const PRESETS = [
   { n: 70000,  label: "70,000 枚（第 3 纪元一份）" },
   { n: 35000,  label: "35,000 枚（第 4 纪元一份）" },
 ];
-let price = null;
+const UP = "#ff4d4f", DOWN = "#2ecc71"; // 红涨绿跌
+let price = null, prevPrice = null, sessionBase = null;
+let hist = [];
+try { hist = JSON.parse(localStorage.getItem("agc_hist") || "[]"); } catch (e) { hist = []; }
 
 function fmtUSD(v) {
   if (v == null || isNaN(v)) return "—";
@@ -84,11 +112,12 @@ function fmtPrice(p) {
   if (p == null || isNaN(p)) return "—";
   return "$" + p.toFixed(8).replace(/0+$/, "").replace(/\.$/, "");
 }
+function pctTxt(v) { return (v >= 0 ? "+" : "") + v.toFixed(2) + "%"; }
 function chgHTML(label, v) {
   if (v == null || isNaN(v)) return "";
   const cls = v >= 0 ? "up" : "down";
-  const sign = v >= 0 ? "+" : "";
-  return `<span>${label} <b class="${cls}">${sign}${v.toFixed(2)}%</b></span>`;
+  const arrow = v >= 0 ? "▲" : "▼";
+  return `<span>${label} <b class="${cls}">${arrow} ${pctTxt(v)}</b></span>`;
 }
 function render() {
   if (price == null) return;
@@ -107,6 +136,46 @@ function render() {
     out.innerHTML = `毛值 <b>${fmtUSD(gross)}</b> · 卖出到手 ≈ <b>${fmtUSD(gross * 0.98)}</b>`;
   } else out.innerHTML = "";
 }
+function drawChart() {
+  const cv = document.getElementById("chart");
+  const pctEl = document.getElementById("chartPct");
+  const metaEl = document.getElementById("chartMeta");
+  if (hist.length < 2) { pctEl.textContent = ""; metaEl.textContent = "正在积累数据点，下一轮刷新后出现涨幅线…"; const x = cv.getContext("2d"); x.clearRect(0,0,cv.width,cv.height); return; }
+  const base = hist[0].p;
+  const pts = hist.map(h => (h.p - base) / base * 100);
+  const last = pts[pts.length - 1];
+  const col = last >= 0 ? UP : DOWN;
+  pctEl.textContent = (last >= 0 ? "▲ " : "▼ ") + pctTxt(last);
+  pctEl.style.color = col;
+  const t0 = new Date(hist[0].t), t1 = new Date(hist[hist.length - 1].t);
+  const f = d => d.toLocaleTimeString("zh-CN", { hour12: false, hour: "2-digit", minute: "2-digit" });
+  metaEl.textContent = `${f(t0)} 起算 · 最高 ${pctTxt(Math.max(...pts))} · 最低 ${pctTxt(Math.min(...pts))} · 共 ${pts.length} 个点`;
+  const dpr = window.devicePixelRatio || 1;
+  const W = cv.clientWidth, H = cv.clientHeight;
+  if (cv.width !== W * dpr) { cv.width = W * dpr; cv.height = H * dpr; }
+  const x = cv.getContext("2d");
+  x.setTransform(dpr, 0, 0, dpr, 0, 0);
+  x.clearRect(0, 0, W, H);
+  let min = Math.min(0, ...pts), max = Math.max(0, ...pts);
+  if (max - min < 0.1) { max += 0.05; min -= 0.05; }
+  const pad = (max - min) * 0.12; max += pad; min -= pad;
+  const X = i => i / (pts.length - 1) * (W - 8) + 4;
+  const Y = v => H - (v - min) / (max - min) * H;
+  // 零线
+  x.strokeStyle = "rgba(255,255,255,.25)"; x.setLineDash([4, 4]); x.beginPath();
+  x.moveTo(0, Y(0)); x.lineTo(W, Y(0)); x.stroke(); x.setLineDash([]);
+  // 填充
+  x.beginPath();
+  pts.forEach((v, i) => i ? x.lineTo(X(i), Y(v)) : x.moveTo(X(i), Y(v)));
+  x.lineTo(X(pts.length - 1), Y(min)); x.lineTo(X(0), Y(min)); x.closePath();
+  x.fillStyle = col + "2e"; x.fill();
+  // 线
+  x.beginPath();
+  pts.forEach((v, i) => i ? x.lineTo(X(i), Y(v)) : x.moveTo(X(i), Y(v)));
+  x.strokeStyle = col; x.lineWidth = 2; x.lineJoin = "round"; x.stroke();
+  // 末点
+  x.beginPath(); x.arc(X(pts.length - 1), Y(last), 3.5, 0, 7); x.fillStyle = col; x.fill();
+}
 async function load() {
   try {
     const r = await fetch("https://api.dexscreener.com/latest/dex/tokens/" + TOKEN);
@@ -115,11 +184,34 @@ async function load() {
     if (!pairs.length) throw new Error("no pair");
     pairs.sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0));
     const p = pairs[0];
+    prevPrice = price;
     price = parseFloat(p.priceUsd);
-    document.getElementById("price").innerHTML = fmtPrice(price) + " <small>USD</small>";
+    if (sessionBase == null) sessionBase = price;
+    // 价格本体 + 跳动方向箭头（红涨绿跌，颜色停留到下一轮）
+    const priceEl = document.getElementById("price");
+    priceEl.innerHTML = fmtPrice(price) + " <small>USD</small>";
+    const tickEl = document.getElementById("tick");
+    if (prevPrice != null && price !== prevPrice) {
+      const upTick = price > prevPrice;
+      priceEl.style.color = upTick ? UP : DOWN;
+      tickEl.textContent = upTick ? "▲" : "▼";
+      tickEl.style.color = upTick ? UP : DOWN;
+    }
+    // 本次打开以来的实时涨跌徽标
+    const sess = (price - sessionBase) / sessionBase * 100;
+    const badge = document.getElementById("liveBadge");
+    badge.textContent = "打开以来 " + (sess >= 0 ? "▲ " : "▼ ") + pctTxt(sess);
+    badge.style.color = sess >= 0 ? UP : DOWN;
+    // 涨幅线采样（存本地，保留近 2 小时）
+    const now = Date.now();
+    if (!hist.length || hist[hist.length - 1].p !== price) hist.push({ t: now, p: price });
+    hist = hist.filter(h => now - h.t <= 2 * 3600 * 1000);
+    if (hist.length > 240) hist = hist.slice(hist.length - 240);
+    try { localStorage.setItem("agc_hist", JSON.stringify(hist)); } catch (e) {}
+    drawChart();
     const pc = p.priceChange || {};
     document.getElementById("chg").innerHTML =
-      chgHTML("1 小时", pc.h1) + chgHTML("6 小时", pc.h6) + chgHTML("24 小时", pc.h24);
+      chgHTML("5 分钟", pc.m5) + chgHTML("1 小时", pc.h1) + chgHTML("6 小时", pc.h6) + chgHTML("24 小时", pc.h24);
     const bnb = price / parseFloat(p.priceNative);
     document.getElementById("stats").innerHTML =
       `<span>24h 成交量 ${fmtUSD(p.volume?.h24)}</span>` +
@@ -133,6 +225,7 @@ async function load() {
   }
 }
 document.getElementById("custom").addEventListener("input", render);
+window.addEventListener("resize", drawChart);
 load();
 setInterval(load, 30000);
 </script>
