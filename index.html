@@ -54,6 +54,19 @@
   .calc .out b { font-size: 19px; }
   .foot { color: #5c6675; font-size: 11px; margin-top: 22px; line-height: 1.7; }
   .err { color: #ff5c5c; }
+  .bsec-title { font-size: 16px; font-weight: 700; margin: 20px 0 4px; }
+  .bsec-sub { color: #8a94a3; font-size: 12px; margin-bottom: 10px; }
+  .bacct { background: #141922; border: 1px solid #232b38; border-radius: 14px; padding: 13px 16px; margin-bottom: 10px; }
+  .bacct .bhead { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+  .bacct .bname { font-size: 15px; font-weight: 700; }
+  .bacct .bshares { font-size: 12px; color: #8a94a3; }
+  .brow { display: flex; justify-content: space-between; font-size: 13px; padding: 3px 0; color: #c6cedb; }
+  .brow b { color: #fff; font-weight: 600; }
+  .brow .usd { color: #8a94a3; font-size: 12px; margin-left: 6px; }
+  .bbar { height: 6px; background: #0b0e13; border-radius: 3px; margin: 8px 0 4px; overflow: hidden; }
+  .bbar i { display: block; height: 100%; background: #f5a623; border-radius: 3px; }
+  .btot { background: #171c26; border: 1px solid #2a3342; border-radius: 14px; padding: 13px 16px; margin-bottom: 10px; font-size: 14px; }
+  .btot b { font-size: 16px; }
 </style>
 </head>
 <body>
@@ -77,6 +90,10 @@
   </div>
 
   <div id="cards"></div>
+
+  <div class="bsec-title">B 类仓位（mintPool）</div>
+  <div class="bsec-sub">奖励 14 天线性解锁 · 数据直读链上铸造合约</div>
+  <div id="bsec"><div class="bacct">加载中…</div></div>
 
   <div class="stats" id="stats"></div>
 
@@ -224,10 +241,89 @@ async function load() {
     document.getElementById("price").innerHTML = '<span class="err">行情拉取失败，稍后自动重试</span>';
   }
 }
+// ---------- B 类仓位（链上直读 mintPool 仓位） ----------
+const MINTER = "0x6288DFe86f22B53eEB6886aE2D78941de7483743";
+const LOCK_SEC = 1209600; // 14 天
+const B_ACCOUNTS = [
+  { name: "1号 zjws.ai", addr: "0xc4979b2cEC8185974eBE09a1B2202D201a7c1303" },
+  { name: "2号 haishijie.ai", addr: "0x5B9a561EdEceD301644f4bA9eD312c983C31bd4a" },
+  { name: "3号 xiaokw.ai", addr: "0xe45dACfc06dcE4d885a0ef95e713adAF01a0ef16" },
+];
+const BSC_RPCS = ["https://bsc.publicnode.com", "https://bsc-rpc.publicnode.com", "https://bsc-dataseed.bnbchain.org"];
+function pad64(x) {
+  if (typeof x === "number") x = x.toString(16);
+  return String(x).toLowerCase().replace("0x", "").padStart(64, "0");
+}
+async function ethCall(to, data) {
+  for (const url of BSC_RPCS) {
+    try {
+      const r = await fetch(url, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_call", params: [{ to, data }, "latest"] })
+      });
+      const j = await r.json();
+      if (j.result) return j.result;
+    } catch (e) { /* try next RPC */ }
+  }
+  throw new Error("rpc failed");
+}
+function hexWords(hex) {
+  const h = hex.replace("0x", "");
+  const out = [];
+  for (let i = 0; i + 64 <= h.length; i += 64) out.push(BigInt("0x" + h.slice(i, i + 64)));
+  return out;
+}
+const fmtAGC = v => Math.round(v).toLocaleString("en-US");
+function fmtDT(ts) {
+  return new Date(ts * 1000).toLocaleString("zh-CN", { hour12: false, month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+async function loadB() {
+  const sec = document.getElementById("bsec");
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    let totReward = 0, totClaimable = 0, totShares = 0;
+    const blocks = [];
+    for (const a of B_ACCOUNTS) {
+      const data = "0x65e1ebbb" + pad64(a.addr) + pad64(0) + pad64(50); // poolPositions(addr,0,50)
+      const w = hexWords(await ethCall(MINTER, data));
+      const len = Number(w[1]);
+      let shares = 0, reward = 0, claimed = 0, claimable = 0, lp = 0, lpTime = 0, vestPct = 0;
+      for (let i = 0; i < len; i++) {
+        const e = w.slice(2 + i * 6, 2 + i * 6 + 6);
+        const t = Number(e[0]), sh = Number(e[1]);
+        const lpv = Number(e[2]) / 1e18, rw = Number(e[3]) / 1e18, cl = Number(e[4]) / 1e18;
+        const lpOut = e[5] !== 0n;
+        const elapsed = Math.min(Math.max(now - t, 0), LOCK_SEC);
+        const vested = rw * elapsed / LOCK_SEC;
+        shares += sh; reward += rw; claimed += cl;
+        claimable += Math.max(vested - cl, 0);
+        if (!lpOut) { lp += lpv; lpTime = Math.max(lpTime, t + LOCK_SEC); }
+        vestPct = rw > 0 ? elapsed / LOCK_SEC * 100 : 0;
+      }
+      totReward += reward; totClaimable += claimable; totShares += shares;
+      const usd = v => price != null ? `<span class="usd">≈ ${fmtUSD(v * price)}（到手 ${fmtUSD(v * price * 0.98)}）</span>` : "";
+      blocks.push(`<div class="bacct">
+        <div class="bhead"><span class="bname">${a.name}</span><span class="bshares">B ${shares} 份 · ${len} 个仓位</span></div>
+        <div class="brow"><span>锁定奖励</span><span><b>${fmtAGC(reward)} AGC</b>${usd(reward)}</span></div>
+        <div class="brow"><span>现在可领</span><span><b>${fmtAGC(claimable)} AGC</b>${usd(claimable)}</span></div>
+        <div class="brow"><span>已领奖励</span><span><b>${fmtAGC(claimed)} AGC</b></span></div>
+        <div class="bbar"><i style="width:${vestPct.toFixed(1)}%"></i></div>
+        <div class="brow"><span>解锁进度</span><span><b>${vestPct.toFixed(1)}%</b></span></div>
+        <div class="brow"><span>LP（14 天后可取）</span><span><b>${lp.toFixed(2)} LP</b>${lpTime ? `<span class="usd">${fmtDT(lpTime)} 起</span>` : ""}</span></div>
+      </div>`);
+    }
+    const totUsd = price != null ? ` · 现价净值 ≈ ${fmtUSD(totClaimable * price * 0.98)}（可领部分到手）` : "";
+    sec.innerHTML = `<div class="btot">合计 B ${totShares} 份 · 锁定奖励 <b>${fmtAGC(totReward)} AGC</b> · 现在可领 <b>${fmtAGC(totClaimable)} AGC</b>${totUsd}</div>` + blocks.join("");
+  } catch (e) {
+    sec.innerHTML = '<div class="bacct"><span class="err">B 仓位链上读取失败，稍后自动重试</span></div>';
+  }
+}
 document.getElementById("custom").addEventListener("input", render);
 window.addEventListener("resize", drawChart);
 load();
 setInterval(load, 30000);
+setTimeout(loadB, 1500);
+setInterval(loadB, 60000);
 </script>
 </body>
 </html>
