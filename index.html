@@ -91,8 +91,18 @@
 
   <div id="cards"></div>
 
+  <div class="bsec-title">我的持仓（分层）</div>
+  <div class="bsec-sub">现货 / A 待领 / B 模式分开列示 · 标注基准 2026-11-07 16:37 · B 每分钟按链上实时更新</div>
+  <div class="btot">
+    <div class="brow"><span>现货（随时能卖）465,774 枚</span><span><b>$2.20</b><span class="usd">到手 ≈ $2.14</span></span></div>
+    <div class="brow"><span>A 待领（11-08 15:55 到期）227,500 枚 + 本金 0.026 BNB</span><span><b>≈ $19.13</b><span class="usd">币 $1.07 + 本金 $18.06</span></span></div>
+    <div class="brow"><span>钱包现金</span><span><b>$41.56</b><span class="usd">USDT 35.86 + BNB 0.0082（≈ $5.70）</span></span></div>
+    <div class="brow"><span>今晚待领 AGD 本金（11-08 00:35）0.034 BNB</span><span><b>≈ $23.62</b></span></div>
+    <div class="brow"><span>确定能到手合计（现金 + 两笔本金）</span><span><b>≈ $83.24</b></span></div>
+  </div>
+
   <div class="bsec-title">B 类仓位（mintPool）</div>
-  <div class="bsec-sub">奖励 14 天线性解锁 · 数据直读链上铸造合约</div>
+  <div class="bsec-sub">奖励 14 天线性解锁 · 未领 = 总奖励 − 已领（已领的进了现货，不重复计）· LP 按池子储备实时折 U</div>
   <div id="bsec"><div class="bacct">加载中…</div></div>
 
   <div class="stats" id="stats"></div>
@@ -111,10 +121,10 @@
 <script>
 const TOKEN = "0x63dea5aCdbE1F27c968907D08610A5f0A0284bA6";
 const PRESETS = [
-  { n: 700000, label: "700,000 枚" },
-  { n: 140000, label: "140,000 枚" },
-  { n: 70000,  label: "70,000 枚（第 3 纪元一份）" },
-  { n: 35000,  label: "35,000 枚（第 4 纪元一份）" },
+  { n: 232663, label: "1号现货 232,663 枚" },
+  { n: 537,    label: "2号现货 537 枚" },
+  { n: 232575, label: "3号现货 232,575 枚" },
+  { n: 465774, label: "现货合计 465,774 枚" },
 ];
 const UP = "#ff4d4f", DOWN = "#2ecc71"; // 红涨绿跌
 let price = null, prevPrice = null, sessionBase = null;
@@ -277,17 +287,25 @@ const fmtAGC = v => Math.round(v).toLocaleString("en-US");
 function fmtDT(ts) {
   return new Date(ts * 1000).toLocaleString("zh-CN", { hour12: false, month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
+const PAIR = "0xE56041CdDBB46DB01c67B7A62684F428a04Db8C6";
 async function loadB() {
   const sec = document.getElementById("bsec");
   try {
     const now = Math.floor(Date.now() / 1000);
-    let totReward = 0, totClaimable = 0, totShares = 0;
+    let resAgc = null, resBnb = null, lpSupply = null, bnbUsd = null;
+    try {
+      const rw = hexWords(await ethCall(PAIR, "0x0902f1ac")); // getReserves: token0=AGC, token1=WBNB
+      const sw = hexWords(await ethCall(PAIR, "0x18160ddd")); // totalSupply
+      resAgc = Number(rw[0]) / 1e18; resBnb = Number(rw[1]) / 1e18; lpSupply = Number(sw[0]) / 1e18;
+      if (price != null && resAgc > 0) bnbUsd = price * resAgc / resBnb;
+    } catch (e) { /* LP 折算不可用时只显示数量 */ }
+    let totReward = 0, totClaimable = 0, totShares = 0, totLpUsd = 0, totUnclaimed = 0;
     const blocks = [];
     for (const a of B_ACCOUNTS) {
       const data = "0x65e1ebbb" + pad64(a.addr) + pad64(0) + pad64(50); // poolPositions(addr,0,50)
       const w = hexWords(await ethCall(MINTER, data));
       const len = Number(w[1]);
-      let shares = 0, reward = 0, claimed = 0, claimable = 0, lp = 0, lpTime = 0, vestPct = 0;
+      let shares = 0, reward = 0, claimed = 0, claimable = 0, lp = 0, lpTime = 0, vestPct = 0, lpUsd = null;
       for (let i = 0; i < len; i++) {
         const e = w.slice(2 + i * 6, 2 + i * 6 + 6);
         const t = Number(e[0]), sh = Number(e[1]);
@@ -300,20 +318,29 @@ async function loadB() {
         if (!lpOut) { lp += lpv; lpTime = Math.max(lpTime, t + LOCK_SEC); }
         vestPct = rw > 0 ? elapsed / LOCK_SEC * 100 : 0;
       }
-      totReward += reward; totClaimable += claimable; totShares += shares;
+      const unclaimed = reward - claimed;
+      if (lpSupply && resAgc != null) {
+        const sh = lp / lpSupply;
+        lpUsd = sh * resAgc * price + (bnbUsd != null ? sh * resBnb * bnbUsd : 0);
+        totLpUsd += lpUsd;
+      }
+      totReward += reward; totClaimable += claimable; totShares += shares; totUnclaimed += unclaimed;
       const usd = v => price != null ? `<span class="usd">≈ ${fmtUSD(v * price)}（到手 ${fmtUSD(v * price * 0.98)}）</span>` : "";
       blocks.push(`<div class="bacct">
         <div class="bhead"><span class="bname">${a.name}</span><span class="bshares">B ${shares} 份 · ${len} 个仓位</span></div>
-        <div class="brow"><span>锁定奖励</span><span><b>${fmtAGC(reward)} AGC</b>${usd(reward)}</span></div>
+        <div class="brow"><span>总奖励</span><span><b>${fmtAGC(reward)} AGC</b>${usd(reward)}</span></div>
+        <div class="brow"><span>未领奖励</span><span><b>${fmtAGC(unclaimed)} AGC</b>${usd(unclaimed)}</span></div>
         <div class="brow"><span>现在可领</span><span><b>${fmtAGC(claimable)} AGC</b>${usd(claimable)}</span></div>
         <div class="brow"><span>已领奖励</span><span><b>${fmtAGC(claimed)} AGC</b></span></div>
         <div class="bbar"><i style="width:${vestPct.toFixed(1)}%"></i></div>
         <div class="brow"><span>解锁进度</span><span><b>${vestPct.toFixed(1)}%</b></span></div>
-        <div class="brow"><span>LP（14 天后可取）</span><span><b>${lp.toFixed(2)} LP</b>${lpTime ? `<span class="usd">${fmtDT(lpTime)} 起</span>` : ""}</span></div>
+        <div class="brow"><span>LP（14 天后可取）</span><span><b>${lp.toFixed(2)} LP</b>${lpUsd != null ? `<span class="usd">现在值 ≈ ${fmtUSD(lpUsd)}</span>` : ""}${lpTime ? `<span class="usd">${fmtDT(lpTime)} 起</span>` : ""}</span></div>
       </div>`);
     }
-    const totUsd = price != null ? ` · 现价净值 ≈ ${fmtUSD(totClaimable * price * 0.98)}（可领部分到手）` : "";
-    sec.innerHTML = `<div class="btot">合计 B ${totShares} 份 · 锁定奖励 <b>${fmtAGC(totReward)} AGC</b> · 现在可领 <b>${fmtAGC(totClaimable)} AGC</b>${totUsd}</div>` + blocks.join("");
+    const unclaimedUsd = price != null ? totUnclaimed * price : null;
+    const bTotal = (unclaimedUsd != null && totLpUsd > 0) ? unclaimedUsd + totLpUsd : null;
+    const bLine = bTotal != null ? `<div class="brow"><span>B 现在总价值（未领奖励 ${fmtUSD(unclaimedUsd)} + LP ${fmtUSD(totLpUsd)}）</span><span><b>${fmtUSD(bTotal)}</b><span class="usd">本金 $26.3 · 按现价纸面值，最终按 14 天均价结算</span></span></div>` : "";
+    sec.innerHTML = `<div class="btot">合计 B ${totShares} 份 · 未领奖励 <b>${fmtAGC(totUnclaimed)} AGC</b> · 现在可领 <b>${fmtAGC(totClaimable)} AGC</b>${bLine}</div>` + blocks.join("");
   } catch (e) {
     sec.innerHTML = '<div class="bacct"><span class="err">B 仓位链上读取失败，稍后自动重试</span></div>';
   }
